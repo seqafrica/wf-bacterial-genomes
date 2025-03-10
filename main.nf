@@ -310,6 +310,20 @@ process baktaVersion {
     """
 }
 
+process hamronizeVersion {
+    label "hamronize"
+    cpus 1
+    memory "2 GB"
+    input:
+        path "input_versions.txt"
+    output:
+        path "hamronize_version.txt"
+    """
+    cat "input_versions.txt" >> "hamronize_version.txt"
+    hamronize --version | sed 's/ /,/' >> "hamronize_version.txt"
+    """
+}
+
 process medakaVersion {
     label "medaka"
     cpus 1
@@ -394,6 +408,7 @@ process seqseroVersion {
     SeqSero2_package.py --version 2>&1 | sed 's/SeqSero2_package.py/SeqSero2/' | sed 's/ /,/' >> "seqsero_version.txt"
     """
 }
+
 
 process getVersions {
     label "wfbacterialgenomes"
@@ -849,6 +864,7 @@ workflow calling_pipeline {
             mlst = run_isolates.mlst
             taxonomy_results = run_isolates.taxonomy
             sourmash_exclude = run_isolates.sourmash_excluded_genomes
+            hamronize = run_isolates.hamronize
             amr = run_isolates.amr
             serotype = run_isolates.serotype
             amr_status = amr |
@@ -859,6 +875,7 @@ workflow calling_pipeline {
             mlst = Channel.empty()
             taxonomy_results = Channel.empty()
             sourmash_exclude = Channel.empty()
+            hamronize = Channel.empty()
             serotype = Channel.empty()
             amr_status = reads |
                 map { meta, reads, stats -> [ meta, "not-met" ] }
@@ -870,7 +887,8 @@ workflow calling_pipeline {
         | unique() )
 
         bakta_version = baktaVersion()
-        medaka_version = medakaVersion(bakta_version)
+        hamronize_version = hamronizeVersion(bakta_version)
+        medaka_version = medakaVersion(hamronize_version)
         mlst_version = mlstVersion(medaka_version)
         sourmash_version = sourmashVersion(mlst_version)
         mobsuite_version = mobsuiteVersion(sourmash_version)
@@ -894,12 +912,13 @@ workflow calling_pipeline {
             | join(flye_info.map { meta, stats -> [meta.alias, stats] }, remainder: true)
             | join(amr.map { meta, resfinder -> [meta.alias, resfinder] }, remainder: true)
             | join(mlst.map { meta, mlst_res -> [meta.alias, mlst_res] }, remainder: true)
+            | join(hamronize.map { meta, hamronize -> [meta.alias, hamronize] }, remainder: true)
             | join(serotype.map { meta, sero -> [meta.alias, sero] }, remainder: true)
             | join(taxonomy_results.map { meta, taxonomy -> [meta.alias, taxonomy] }, remainder: true)
             | join(mobsuite_results.map { meta, mob_res -> [meta.alias, mob_res] }, remainder: true)
             | combine(sourmash_exclude.ifEmpty([null]))
-            | map { alias, meta, stats_dir, vcf_var, vcf_st, bakta_files, fwd, rev, all, flye, amr_res, mlst_res, sero, taxonomy, mob_res, excluded  ->
-                def files = [stats_dir, vcf_var, vcf_st, flye, amr_res, mlst_res, taxonomy, sero, fwd, rev, all, mob_res, excluded]
+            | map { alias, meta, stats_dir, vcf_var, vcf_st, bakta_files, fwd, rev, all, flye, amr_res, mlst_res, hamr, sero, taxonomy, mob_res, excluded  ->
+                def files = [stats_dir, vcf_var, vcf_st, flye, amr_res, mlst_res, hamr, taxonomy, sero, fwd, rev, all, mob_res, excluded]
                 if (bakta_files) {
                     files.addAll(bakta_files)
                 }
@@ -983,6 +1002,7 @@ workflow calling_pipeline {
             fastq_stats,
             amr.map {meta, resfinder -> resfinder},
             mlst.map {meta, mlst -> mlst},
+            hamronize.map {meta, hamronize -> hamronize },
             flye_info.map {meta, stats -> stats},
             workflow_params,
             software_versions,
