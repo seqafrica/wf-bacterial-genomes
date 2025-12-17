@@ -20,6 +20,7 @@ include {
     alignmentCheckpoint;
     variantCheckpoint;
     amrCheckpoint;
+    plasmidIdCheckpoint;
     annotationCheckpoint;
     perSampleReportingCheckpoint;
     reportingCheckpoint;
@@ -166,37 +167,148 @@ process splitRegions {
     """
 }
 
-process runProkka {
-    // run prokka in a basic way on the consensus sequence
-    label "prokka"
+process runDnaapler {
+    label "wfbacterialgenomes"
     cpus params.threads
     memory "4 GB"
     input:
-        tuple val(meta), path("consensus.fasta.gz")
+        tuple val(meta), path("assembly.fasta.gz")
     output:
-        tuple val(meta), path("*prokka_results/*prokka.gff"), path("*prokka_results/*prokka.gbk")
-
+        tuple val(meta), path("dnaapler_output/${meta.alias}.draft_assembly.fasta.gz"), emit: assembly
+        tuple val(meta), env(DNAAPLER_EXIT_CODE), env(DNAAPLER_STDERR), emit: exit_status
     script:
-        def prokka_opts = params.prokka_opts ?: ""
     """
-    gunzip -rf consensus.fasta.gz
-    prokka $prokka_opts --outdir "${meta.alias}.prokka_results" \
-        --cpus $task.cpus --prefix "${meta.alias}.prokka" *consensus.fasta
+    gunzip -c assembly.fasta.gz > assembly.fasta
+    set +e
+    dnaapler all \
+        --input assembly.fasta \
+        --output dnaapler_output \
+        --prefix ${meta.alias}_dnaapler \
+        --threads $task.cpus 2> stderr.log
+    DNAAPLER_EXIT_CODE=\$?
+    set -e
+    if [[ \$DNAAPLER_EXIT_CODE -ne 0 ]]; then
+        DNAAPLER_STDERR=\$(cat stderr.log 2>/dev/null || echo "No stderr available")
+    fi
+    if [[ \$DNAAPLER_EXIT_CODE -eq 0 ]] && [[ -s "dnaapler_output/${meta.alias}_dnaapler_reoriented.fasta" ]]; then
+        # If exit code 0 and non-empty output
+        bgzip -c "dnaapler_output/${meta.alias}_dnaapler_reoriented.fasta" > "dnaapler_output/${meta.alias}.draft_assembly.fasta.gz"
+    else
+        # On dnaapler failure, output original .fasta
+        bgzip -c assembly.fasta > "dnaapler_output/${meta.alias}.draft_assembly.fasta.gz"
+    fi
     """
 }
 
+process download_bakta_db {
+    label "bakta"
+    cpus 2
+    memory "8 GB"
+    storeDir {params.store_dir ? "${params.store_dir}" : null }
+    
+    input:
+        val db_type
+    output:
+        path "bakta_${db_type}"
+    
+    script:
+    log.info("Downloading Bakta database")
+    """
+    mkdir -p "bakta_${db_type}"
+    bakta_db download --output "bakta_${db_type}" --type ${db_type}
+    amrfinder_update --force_update --database "bakta_${db_type}/amrfinderplus-db/"
+    
+    if [ ! -f "bakta_${db_type}/db-${db_type}/version.json" ]; then
+    echo "ERROR: Bakta database download failed"
+    exit 1
+    fi
+    """
+}
 
-process prokkaVersion {
-    label "prokka"
+process runBakta {
+    // run Bakta on the consensus sequence
+    label "bakta"
+    cpus params.threads
+    memory "8 GB"
+    input:
+        tuple val(meta), path("consensus.fasta.gz")
+        path bakta_db
+    output:
+        tuple val(meta), 
+            path("${meta.alias}.bakta_results/${meta.alias}.bakta.gff3"), 
+            path("${meta.alias}.bakta_results/${meta.alias}.bakta.gbff"),
+            optional: true, emit: annot
+        tuple val(meta), 
+            env(BAKTA_EXIT_CODE), 
+            env(STDERR_TAIL),
+            emit: exit_status
+    script:
+    def bakta_opts = params.bakta_opts ?: ""
+    def db_type = params.bakta_db_type
+    """
+    gunzip -c consensus.fasta.gz > consensus.fasta
+    export AMRFINDERPLUS_DB="${bakta_db}/amrfinderplus-db"
+    bakta --db ${bakta_db}/db-${db_type} \
+        $bakta_opts \
+        --keep-contig-headers \
+        --output "${meta.alias}.bakta_results" \
+        --threads $task.cpus \
+        --prefix "${meta.alias}.bakta" \
+        --skip-plot \
+        *consensus.fasta 2> stderr.log || true
+    BAKTA_EXIT_CODE=\$?
+    STDERR_TAIL=\$(tail -n 20 stderr.log 2>/dev/null || echo "No stderr")
+    """
+}
+
+process runMobSuite {
+    label "mobsuite"
+    cpus params.threads
+    memory "8 GB"
+    input:
+        tuple val(meta), path("assembly.fasta.gz")
+    output:
+        tuple val(meta), 
+            path("${meta.alias}_mob_results/"),
+            optional: true, emit: results
+        tuple val(meta), 
+            env(MOB_EXIT_CODE), 
+            env(MOB_STDERR),
+            emit: exit_status
+    script:
+    def mob_opts = params.plasmid_id_opts ?: ""
+    """
+    gunzip -c assembly.fasta.gz > assembly.fasta
+    mkdir -p "${meta.alias}_mob_results"
+    
+    set +e
+    mob_recon \
+        ${mob_opts} \
+        --infile assembly.fasta \
+        --outdir "${meta.alias}_mob_results" \
+        --force \
+        --num_threads ${task.cpus} 2> stderr.log
+    MOB_EXIT_CODE=\$?
+    set -e
+    
+    if [[ \$MOB_EXIT_CODE -ne 0 ]]; then
+        MOB_STDERR=\$(cat stderr.log 2>/dev/null || echo "No stderr available")
+    else
+        MOB_STDERR=""
+    fi
+    """
+}
+
+process baktaVersion {
+    label "bakta"
     cpus 1
     memory "2 GB"
     output:
-        path "prokka_version.txt"
+        path "bakta_version.txt"
     """
-    prokka --version |& sed 's/ /,/' >> "prokka_version.txt"
+    bakta --version |& sed 's/ /,/' >> "bakta_version.txt"
     """
 }
-
 
 process medakaVersion {
     label "medaka"
@@ -209,6 +321,7 @@ process medakaVersion {
     """
     cat "input_versions.txt" >> "medaka_version.txt"
     medaka --version | sed 's/ /,/' >> "medaka_version.txt"
+    bcftools --version | head -n 1 | sed 's/ /,/' >> "medaka_version.txt"
     """
 }
 
@@ -226,7 +339,61 @@ process mlstVersion {
     """
 }
 
+process sourmashVersion {
+    label "sourmash"
+    cpus 1
+    memory "2 GB"
+    input:
+        path "input_version.txt"
+    output:
+        path "sourmash_version.txt"
+    """
+    cat "input_version.txt" >> "sourmash_version.txt"
+    sourmash --version | sed 's/ /,/' >> "sourmash_version.txt"
+    """
+}
 
+process mobsuiteVersion {
+    label "mobsuite"
+    cpus 1
+    memory "2 GB"
+    input:
+        path "input_version.txt"
+    output:
+        path "mobsuite_version.txt"
+    """
+    cat "input_version.txt" >> "mobsuite_version.txt"
+    mob_recon --version | sed 's/ /,/' >> "mobsuite_version.txt"
+    """
+}
+
+process resfinderVersion {
+    label "amr"
+    cpus 1
+    memory "2 GB"
+    input:
+        path "input_version.txt"
+    output:
+        path "resfinder_version.txt"
+    """
+    cat "input_version.txt" >> "resfinder_version.txt"
+    python -m resfinder --version 2>&1 | sed 's/^/resfinder,/' >> "resfinder_version.txt"
+    """
+}
+
+process seqseroVersion {
+    label "seqsero2"
+    cpus 1
+    memory "2 GB"
+    input:
+        path "input_version.txt"
+    output:
+        path "seqsero_version.txt"
+    """
+    cat "input_version.txt" >> "seqsero_version.txt"
+    SeqSero2_package.py --version 2>&1 | sed 's/SeqSero2_package.py/SeqSero2/' | sed 's/ /,/' >> "seqsero_version.txt"
+    """
+}
 
 process getVersions {
     label "wfbacterialgenomes"
@@ -240,8 +407,10 @@ process getVersions {
     cat "input_versions.txt" >> versions.txt
     python -c "import pysam; print(f'pysam,{pysam.__version__}')" >> versions.txt
     fastcat --version | sed 's/^/fastcat,/' >> versions.txt
+    bamstats --version | sed 's/^/bamstats,/' >> versions.txt
     mosdepth --version | sed 's/ /,/' >> versions.txt
     flye --version | sed 's/^/flye,/' >> versions.txt
+    dnaapler --version | head -1 | sed 's/, version /,/' >> versions.txt
     python -c "import pomoxis; print(f'pomoxis,{pomoxis.__version__}')" >> versions.txt
     """
 }
@@ -270,7 +439,7 @@ process collect_results {
         tuple val(meta), path("report_files/*")
         path("params.json")
     output:
-        path "${meta.alias}.json"
+        tuple val(meta), path("${meta.alias}.json")
     script:
         String alias = meta.alias
         String barcode = meta.barcode
@@ -316,37 +485,37 @@ process makeReport {
         path "params.json"
         path "variants/*"
         val sample_ids
-        path "prokka/*"
+        val bakta_enabled 
         path "per_read_stats/*"
         path "fwd/*"
         path "rev/*"
         path "total_depth/*"
-        path "flye_stats/*"
-        path "resfinder/*"
-        path "mlst/*"
-        path "serotype/*"
+        path results
         path client_fields
     output:
         path "wf-bacterial-genomes-*.html"
     script:
         report_name = "wf-bacterial-genomes-report.html"
         denovo = params.reference_based_assembly as Boolean ? "" : "--denovo"
-        prokka = params.run_prokka as Boolean ? "--prokka" : ""
+        bakta_arg = bakta_enabled && params.run_bakta ? "--bakta" : ""
         isolates = params.isolates as Boolean ? "--isolates" : ""
+        plasmid_id = params.run_plasmid_id as Boolean ? "--plasmid_id" : ""  
         samples = sample_ids.join(" ")
         client_fields_args = client_fields.name == OPTIONAL_FILE.name ? "" : "--client_fields $client_fields"
     // NOTE: the script assumes the various subdirectories
     """
     workflow-glue report \
-    $prokka \
+    $bakta_arg \
     $denovo \
     $isolates \
+    $plasmid_id \
     --versions versions \
     --params params.json \
     --output $report_name \
     --sample_ids $samples \
-   $client_fields_args \
-   --wf_version ${workflow.manifest.version}
+    --results $results \
+    $client_fields_args \
+    --wf_version ${workflow.manifest.version}
     """
 }
 
@@ -487,8 +656,17 @@ workflow calling_pipeline {
             failed_samples = input_reads.no_reads.mix(
                 deNovo.out.failed | filter { meta, failed -> failed != "0"}
             ) | map { meta, field -> [ meta, "not-met" ] }
+            
+            // Attempt to reorient successful Flye assemblies to dnaA/repA
+            flye_assemblies = deNovo.out.asm.map { meta, asm, stats -> [meta, asm] }
+            dnaapler_output = runDnaapler(flye_assemblies)
+            dnaapler_output.exit_status.subscribe { meta, exit_code, stderr ->
+                if (exit_code != "0") {
+                    log.warn "Dnaapler failed for sample '${meta.alias}': ${stderr}"
+                }
+            }
+            named_refs = dnaapler_output.assembly
 
-            named_refs = deNovo.out.asm.map { meta, asm, stats -> [meta, asm] }
             // Nextflow might be run in strict mode (e.g. in CI) which prevents `join`
             // from dropping non-matching entries. We have to use `remainder: true` and
             // filter afterwards instead.
@@ -535,12 +713,13 @@ workflow calling_pipeline {
         regions_bams = named_alignments.combine(named_regions, by: 0).map{it[1..-1]}
         regions_model = regions_bams.combine(basecall_models, by: 0)
         // the `.combine`s below use the meta map (and not sample id)
-        consensus = medakaInference_consensus(regions_model, "consensus")
+        consensus= medakaInference_consensus(regions_model, "consensus")
         | groupTuple
         | combine(alignments, by: 0)
         | combine(named_refs, by: 0)
         | combine(basecall_models, by: 0)
         | medakaConsensus
+
 
         // Checkpoint 2 - Assembly
         assembly_checkpoint = assemblyCheckpoint(consensus
@@ -572,84 +751,169 @@ workflow calling_pipeline {
         | mix( failed_samples )
         | unique() )
 
-
-        if (params.run_prokka) {
-            prokka = runProkka(consensus)
-            prokka_status = prokka |
-                map { meta, gff, gbk  -> [ meta, "complete" ] }
+        if (params.run_plasmid_id) {
+            mob_output = runMobSuite(consensus)
+            
+            // Log failed runs
+            mob_output.exit_status.subscribe { meta, exit_code, stderr ->
+                if (exit_code != "0") {
+                    log.warn "Mob-suite failed for sample '${meta.alias}': ${stderr}"
+                }
+            }
+            
+            // Filter successful runs
+            mobsuite_results = mob_output.exit_status
+                .join(mob_output.results, by: 0, remainder: true, failOnMismatch: false)
+                .filter { meta, exit_code, stderr, results = null ->
+                    def valid_output = results?.exists()
+                    return exit_code == "0" && valid_output
+                }
+                .map { meta, exit_code, stderr, results -> [meta, results] }
+            
+            mobsuite_status = mobsuite_results
+                .map { meta, results -> [meta, "complete"] }
+                .mix(failed_samples.map { meta, status -> [meta, "not-met"] })
+                .unique()
         } else {
-            prokka = Channel.empty()
-            prokka_status = reads |
-                map { meta, reads, stats -> [ meta, "not-met" ] }
+            mobsuite_results = Channel.empty()
+            mobsuite_status = reads | map { meta, reads, stats -> [meta, "not-met"] }
         }
 
-        // Checkpoint 4 - annotations
-        annotation_checkpoint = annotationCheckpoint(prokka_status
+        // Checkpoint 4 - plasmid identification
+        plasmid_checkpoint = plasmidIdCheckpoint(mobsuite_status
+            | mix(failed_samples)
+            | unique())
+
+        if (params.run_bakta) {
+            bakta_db = params.bakta_db ? 
+                Channel.fromPath(params.bakta_db, checkIfExists: true) : 
+                download_bakta_db(params.bakta_db_type)
+
+
+            bakta_output = runBakta(consensus, bakta_db)
+            // Check if bakta annotation succedds for each sample and log failed samples with error message
+            bakta_output.exit_status.subscribe { meta, exit_code, stderr_tail ->
+                if (exit_code != "0") {
+                    log.warn "Bakta annotation failed for sample '${meta.alias}': ${stderr_tail}"
+                }
+            }        
+            // Pass on successful runs only -> exit code 0 + files exist
+            bakta = bakta_output.exit_status
+                .join(bakta_output.annot, by: 0, remainder: true, failOnMismatch: false)
+                .filter { meta, exit_code, stderr_tail, gff3 = null, gbff = null ->
+                    // Check that output files exist and are not empty
+                    def valid_output = gff3?.size() > 0 && gbff?.size() > 0
+                    return exit_code == "0" && valid_output
+                }
+                .map { meta, exit_code, stderr_tail, gff3, gbff -> [meta, gff3, gbff] }
+            
+            bakta_status = bakta
+                .map { meta, gff3, gbff -> [meta, "complete"] }
+                .mix(failed_samples.map { meta, status -> [meta, "not-met"] })
+                .unique()
+        }
+        else {
+            bakta = Channel.empty()
+            bakta_status = reads |
+                map { meta, reads, stats -> [ meta, "not-met" ] }
+        }
+        bakta_files = bakta.map{meta, gff3, gbff -> gff3}.collect().ifEmpty(OPTIONAL_FILE)
+
+        // Checkpoint 5 - annotations
+        annotation_checkpoint = annotationCheckpoint(bakta_status
         | mix( failed_samples )
         | unique() )
+
+        resfinder_db = params.resfinder_db ? 
+            Channel.fromPath(params.resfinder_db, checkIfExists: true) : 
+            Channel.value(OPTIONAL_FILE)
+        pointfinder_db = params.pointfinder_db ? 
+            Channel.fromPath(params.pointfinder_db, checkIfExists: true) : 
+            Channel.value(OPTIONAL_FILE)
+        db_mapping_file = params._sourmash_pointfinder_mapping ? 
+            Channel.fromPath(params._sourmash_pointfinder_mapping, checkIfExists: true) : 
+            Channel.value(OPTIONAL_FILE)
 
         // amr and mlst calling
         if (params.isolates) {
             run_isolates = run_isolates(
                 consensus,
+                params._sourmash_db_exclude_list,
                 "${params.resfinder_threshold}",
-                "${params.resfinder_coverage}")
+                "${params.resfinder_coverage}",
+                params.pointfinder_ignore_indels,
+                params.pointfinder_ignore_stop_codons,
+                resfinder_db,
+                pointfinder_db,
+                db_mapping_file)
             mlst = run_isolates.mlst
+            taxonomy_results = run_isolates.taxonomy
+            sourmash_exclude = run_isolates.sourmash_excluded_genomes
             amr = run_isolates.amr
-            amr_results = run_isolates.report_table
             serotype = run_isolates.serotype
-            amr_status = amr_results |
-                map { meta, resfinder -> [ meta, "complete" ] }
+            amr_status = amr |
+                map { meta, amr_dir -> [ meta, "complete" ] }
             
         } else {
             amr = Channel.empty()
-            amr_results = Channel.empty()
             mlst = Channel.empty()
+            taxonomy_results = Channel.empty()
+            sourmash_exclude = Channel.empty()
             serotype = Channel.empty()
             amr_status = reads |
                 map { meta, reads, stats -> [ meta, "not-met" ] }
         }
 
-        // Checkpoint 5 - AMR / isolates
+        // Checkpoint 6 - AMR / isolates
         amr_checkpoint = amrCheckpoint(amr_status
         | mix( failed_samples )
         | unique() )
 
-        prokka_version = prokkaVersion()
-        medaka_version = medakaVersion(prokka_version)
+        bakta_version = baktaVersion()
+        medaka_version = medakaVersion(bakta_version)
         mlst_version = mlstVersion(medaka_version)
-        software_versions = getVersions(mlst_version)
+        sourmash_version = sourmashVersion(mlst_version)
+        mobsuite_version = mobsuiteVersion(sourmash_version)
+        resfinder_version = resfinderVersion(mobsuite_version)
+        seqsero_version = seqseroVersion(resfinder_version)
+        software_versions = getVersions(seqsero_version)
+
         workflow_params = getParams()
 
-        // Taken from per sample reports to fill in wf.Sample
-        // This is a temporary solution before reporting is done with results.json CW-3217
-        report_files_per_sample = reads | filter {meta, reads, stats -> reads != null }
-            | map { meta, reads, stats_dir -> 
-                
-                [meta, stats_dir ? stats_dir : null]
-            }
-            | join(vcf_variant, remainder: true)
-            | join(vcf_stats, remainder: true)
-            | join(prokka, remainder: true)
-            | join(depth_stats.fwd, remainder: true)
-            | join(depth_stats.rev, remainder: true)
-            | join(depth_stats.all, remainder: true)
-            | join(flye_info, remainder: true)
-            | join(amr, remainder: true)
-            | join(mlst, remainder: true)
-            | join(serotype, remainder: true)
-            | map {
-                meta = it[0]
-                files = it[1..-1]
-                // the empty channels will have resulted in occurrences of `null` in
-                // the list produced by the joins --> filter
+        // Using meta.alias as join key, 
+        // because directly joining meta objects introduces problems if some of the files are missing
+        report_files_per_sample = reads 
+            | filter {meta, reads, stats -> reads != null && meta != null }
+            | map { meta, reads, stats_dir -> [meta.alias, meta, stats_dir ?: OPTIONAL_FILE] }
+            | join(vcf_variant.map { meta, vcf -> [meta.alias, vcf] }, remainder: true)
+            | join(vcf_stats.map { meta, stats -> [meta.alias, stats] }, remainder: true)
+            | join(bakta.map { meta, gff3, gbff -> [meta.alias, [gff3, gbff]] }, remainder: true)
+            | join(depth_stats.fwd.map { meta, bed -> [meta.alias, bed] }, remainder: true)
+            | join(depth_stats.rev.map { meta, bed -> [meta.alias, bed] }, remainder: true)
+            | join(depth_stats.all.map { meta, bed -> [meta.alias, bed] }, remainder: true)
+            | join(flye_info.map { meta, stats -> [meta.alias, stats] }, remainder: true)
+            | join(amr.map { meta, resfinder -> [meta.alias, resfinder] }, remainder: true)
+            | join(mlst.map { meta, mlst_res -> [meta.alias, mlst_res] }, remainder: true)
+            | join(serotype.map { meta, sero -> [meta.alias, sero] }, remainder: true)
+            | join(taxonomy_results.map { meta, taxonomy -> [meta.alias, taxonomy] }, remainder: true)
+            | join(mobsuite_results.map { meta, mob_res -> [meta.alias, mob_res] }, remainder: true)
+            | combine(sourmash_exclude.ifEmpty([null]))
+            | map { alias, meta, stats_dir, vcf_var, vcf_st, bakta_files, fwd, rev, all, flye, amr_res, mlst_res, sero, taxonomy, mob_res, excluded  ->
+                def files = [stats_dir, vcf_var, vcf_st, flye, amr_res, mlst_res, taxonomy, sero, fwd, rev, all, mob_res, excluded]
+                if (bakta_files) {
+                    files.addAll(bakta_files)
+                }
                 [meta, files.findAll { it }]
-            }
-        
+                }
+
         sample_jsons = collect_results(report_files_per_sample, workflow_params)
 
+        report_files_with_json = report_files_per_sample
+            .join(sample_jsons, by: 0)
+            .map { meta, files, json -> [meta, files + [json]] }
+
         run_model = createRunModel(
-            sample_jsons.collect(),
+            sample_jsons.map { meta, json -> json }.collect(),
             metadata
         )
 
@@ -663,18 +927,15 @@ workflow calling_pipeline {
             workflow_params,
             vcf_stats.map { meta, stats -> stats }.collect().ifEmpty(OPTIONAL_FILE),
             sample_ids.collect(),
-            prokka.map{ meta, gff, gbk -> gff }.collect().ifEmpty(OPTIONAL_FILE),
+            bakta_files.map { files -> params.run_bakta as Boolean && files.size() > 0 },
             fastq_stats.collect(),
             depth_stats.fwd.map{ meta, depths -> depths }.collect().ifEmpty(OPTIONAL_FILE),
             depth_stats.rev.map{ meta, depths -> depths }.collect().ifEmpty(OPTIONAL_FILE),
             depth_stats.all.map{ meta, depths -> depths }.collect().ifEmpty(OPTIONAL_FILE),
-            flye_info.map{ meta, stats -> stats }.collect().ifEmpty(OPTIONAL_FILE),
-            amr_results.map{ meta, amr -> amr }.collect().ifEmpty(OPTIONAL_FILE),
-            mlst.map{ meta, mlst -> mlst }.collect().ifEmpty(OPTIONAL_FILE),
-            serotype.map{ meta, sero -> sero}.collect().ifEmpty(OPTIONAL_FILE),
+            run_model.collect(),
             client_fields)
         
-        // Checkpoint 6 - report
+        // Checkpoint 7 - report
         reporting_checkpoint = reportingCheckpoint(report)
 
 
@@ -682,7 +943,7 @@ workflow calling_pipeline {
             perSampleReports = makePerSampleReports(
                 software_versions,
                 workflow_params,
-                report_files_per_sample
+                report_files_with_json
             )
             per_sample_report_status = perSampleReports 
                 | map { meta, report -> [ meta, "complete" ] }
@@ -692,7 +953,7 @@ workflow calling_pipeline {
                 map { meta, reads, stats -> [ meta, "not-met" ] }
         }
         
-        // Checkpoint 7 - per sample report
+        // Checkpoint 8 - per sample report
         per_sample_reporting_checkpoint = perSampleReportingCheckpoint(per_sample_report_status
         | mix( failed_samples )
         | unique() )
@@ -702,6 +963,7 @@ workflow calling_pipeline {
             alignment_checkpoint,
             assembly_checkpoint,
             variant_checkpoint,
+            plasmid_checkpoint,
             annotation_checkpoint,
             amr_checkpoint,
             reporting_checkpoint,
@@ -717,7 +979,7 @@ workflow calling_pipeline {
             alignments.map {meta, bam, bai -> [bam, bai]},
             report,
             perSampleReports.map {meta, report -> report},
-            prokka.map{meta, gff, gbk -> [gff, gbk]},
+            bakta.map{meta, gff3, gbff -> [gff3, gbff]},
             fastq_stats,
             amr.map {meta, resfinder -> resfinder},
             mlst.map {meta, mlst -> mlst},
@@ -725,7 +987,10 @@ workflow calling_pipeline {
             workflow_params,
             software_versions,
             run_model,
-            serotype.map { meta, sero -> sero }
+            serotype.map { meta, sero -> sero },
+            taxonomy_results.map {meta, taxonomy -> taxonomy},
+            sourmash_exclude,
+            mobsuite_results.map {meta, mob_res -> mob_res}
         )
 
     emit:
@@ -738,10 +1003,28 @@ WorkflowMain.initialise(workflow, params, log)
 workflow {
     Pinguscript.ping_start(nextflow, workflow, params)
 
-      File checkpoints_file = new File("checkpoints.json");  
+    File checkpoints_file = new File("checkpoints.json");  
 
     if (checkpoints_file.exists() == true && workflow.resume == false){
       checkpoints_file.delete()
+    }
+
+    data_root = "./data/"
+
+    if (params.sourmash_db_exclude_list == null){
+        params.remove('sourmash_db_exclude_list')
+        params._sourmash_db_exclude_list = projectDir.resolve(data_root + "/sourmash_db_exclude_list.txt").toString()
+    } else {
+        params._sourmash_db_exclude_list = file(params.sourmash_db_exclude_list, type: "file", checkIfExists:true).toString()
+        params.remove('sourmash_db_exclude_list')
+    }
+
+    if (params.sourmash_pointfinder_mapping == null){
+        params.remove('sourmash_pointfinder_mapping')
+        params._sourmash_pointfinder_mapping = projectDir.resolve(data_root + "/pointfinder_db_mapping.csv").toString()
+    } else {
+        params._sourmash_pointfinder_mapping = file(params.sourmash_pointfinder_mapping, type: "file", checkIfExists:true).toString()
+        params.remove('sourmash_pointfinder_mapping')
     }
 
     // warn the user if overriding the basecall models found in the inputs

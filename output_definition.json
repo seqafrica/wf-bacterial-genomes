@@ -3,7 +3,7 @@
     "workflow-report": {
       "filepath": "wf-bacterial-genomes-report.html",
       "title": "Workflow report",
-      "description": "Report for all samples",
+      "description": "Report for all samples.",
       "mime-type": "text/html",
       "optional": false,
       "type": "aggregated"
@@ -18,7 +18,7 @@
     },
     "workflow-checkpoints" : {
       "filepath": "checkpoints.json",
-      "title": "workflow checkpoints",
+      "title": "Workflow checkpoints",
       "description": "Structured workflow checkpoints for internal/onward use.",
       "mime-type": "text/json",
       "optional": false,
@@ -35,7 +35,7 @@
     "read-stats-per-file": {
       "filepath": "{{ alias }}/fastcat_stats/per-file-stats.tsv",
       "title": "Per file read stats",
-      "description": "A TSV with per file read stats, per sample.",
+      "description": "A TSV with per file read stats.",
       "mime-type": "text/tsv",
       "optional": false,
       "type": "per-sample"
@@ -43,14 +43,22 @@
     "read-stats-per-read": {
       "filepath": "{{ alias }}/fastcat_stats/per-read-stats.tsv.gz",
       "title": "Per read stats",
-      "description": "A TSV with per read stats, per sample",
+      "description": "A TSV with per read stats.",
       "mime-type": "application/gzip",
+      "optional": false,
+      "type": "per-sample"
+    },
+    "flye-stats": {
+      "filepath": "{{ alias }}.flye_stats.tsv",
+      "title": "Flye assembly stats",
+      "description": "Assembly statistics generated for Flye assemblies.",
+      "mime-type": "text/tsv",
       "optional": false,
       "type": "per-sample"
     },
     "alignment": {
       "filepath": "{{ alias }}.bam",
-      "title": "alignment",
+      "title": "Alignment",
       "description": "Aligned reads for the sample in BAM format.",
       "mime-type": "application/x-gzip",
       "optional": true,
@@ -58,7 +66,7 @@
     },
     "alignment-index": {
       "filepath": "{{ alias }}.bam.bai",
-      "title": "alignment index",
+      "title": "Alignment index",
       "description": "An index file for the alignment in BAI format.",
       "mime-type": "application/x-gzip",
       "optional": true,
@@ -67,15 +75,23 @@
     "assembly": {
       "filepath": "{{ alias }}.medaka.fasta.gz",
       "title": "Draft assembly FASTA file",
-      "description": "Consensus file generated from either de-novo assembly or reference variant calling pipeline.",
+      "description": "Consensus file generated from either de novo assembly or reference variant calling pipeline, with contigs oriented to start at replication initiation point.",
       "mime-type": "application/gzip",
+      "optional": true,
+      "type": "per-sample"
+    },
+    "mob-suite-results": {
+      "filepath": "{{ alias }}_mob_results",
+      "title": "Plasmid contig identification results",
+      "description": "Complete MOB-suite output directory containing all plasmid identification and characterisation results",
+      "mime-type": "inode/directory",
       "optional": true,
       "type": "per-sample"
     },
     "variants": {
       "filepath": "{{ alias }}.medaka.vcf.gz",
       "title": "Variants VCF file",
-      "description": "VCF file of variants detected against the provided reference (Reference mode only).",
+      "description": "VCF file of variants detected against the provided reference (reference mode only).",
       "mime-type": "application/gzip",
       "optional": true,
       "type": "per-sample"
@@ -83,15 +99,23 @@
     "variants_stats": {
       "filepath": "{{ alias }}.variants.stats",
       "title": "Variants summary",
-      "description": "TSV file of summary statistics for variants in sample (Reference mode only).",
+      "description": "TSV file of summary statistics for variants in sample (reference mode only).",
       "mime-type": "text/tab-seperated-values",
       "optional": true,
       "type": "per-sample"
     },
-    "annotation": {
-      "filepath": "{{ alias }}.prokka.gff",
-      "title": "Annotations files",
-      "description": "Annotations of regions of interest in assembly in GBK and GFF format.",
+    "annotation-gff3": {
+      "filepath": "{{ alias }}.bakta.gff3",
+      "title": "Annotations in GFF3 format",
+      "description": "Annotations of regions of interest in assembly in GFF3 format.",
+      "mime-type": "application/octet-stream",
+      "optional": true,
+      "type": "per-sample"
+    },
+    "annotation-gbff": {
+      "filepath": "{{ alias }}.bakta.gbff",
+      "title": "Annotations in GBFF format",
+      "description": "Annotations of regions of interest in assembly in GBFF format.",
       "mime-type": "application/octet-stream",
       "optional": true,
       "type": "per-sample"
@@ -104,18 +128,34 @@
       "optional": true,
       "type": "per-sample"
     },
+    "taxonomic_identification": {
+      "filepath": "{{ alias }}_sourmash_taxonomy.csv",
+      "title": "Sourmash taxonomic identification results with lineage annotations.",
+      "description": "Sourmash gather hits with taxonomic lineage annotations (isolates mode only).",
+      "mime-type": "text/csv",
+      "optional": true,
+      "type": "per-sample"
+    },
+    "sourmash-excluded-assemblies": {
+      "filepath": "sourmash_picklist_excluded.txt",
+      "title": "Sourmash excluded assemblies",
+      "description": "List of assembly identifiers (GCA_/GCF_) excluded from default Sourmash species identification database (isolates mode only).",
+      "mime-type": "text/plain",
+      "optional": true,
+      "type": "aggregated"
+    },
     "amr": {
       "filepath": "{{ alias }}_resfinder_results",
       "title": "AMR calling results",
-      "description": "Resfinder results for AMR calling (isolates mode only).",
+      "description": "Complete AMR calling output directory containing detailed ResFinder, PointFinder, and DesinFinder outputs (isolates mode only).",
       "mime-type": "inode/directory",
       "optional": true,
       "type": "per-sample"
     },
     "per-sample-report": {
       "filepath": "{{ alias }}-isolates-report.html",
-      "title": "isolates per sample report",
-      "description": "Per sample report isolates mode",
+      "title": "Isolate per sample report",
+      "description": "Per sample report (isolates mode only).",
       "mime-type": "text/html",
       "optional": true,
       "type": "per-sample"
@@ -157,12 +197,12 @@
         "variants"
       ]
     },
-    "annotation": {
+    "plasmid-identification": {
       "type": "per-sample",
-      "title": "annotation",
-      "description": "Checkpoint to monitor assembly annotation",
+      "title": "plasmid identification",
+      "description": "Checkpoint to monitor plasmid identification and characterization",
       "files": [
-        "annotation"
+        "mob-suite-results"
       ]
     },
     "amr": {

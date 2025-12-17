@@ -8,6 +8,7 @@ variables:
     NF_WORKFLOW_OPTS: "--fastq test_data/fastq --reference_based_assembly --reference test_data/ref/reference.subseq.fa.gz --threads 4 --chunk_size 100000"
     NF_IGNORE_PROCESSES: "deNovo"
     CI_FLAVOUR: "new"
+    RELEASE_WORKFLOW: "yes"
 
 
 docker-run:
@@ -15,7 +16,8 @@ docker-run:
         matrix:
             - MATRIX_NAME: [de-novo, de-novo-bam, de-novo-ubam, de-novo-advanced_options, amr,  
                             barcode04, mixed-species, reference-iso, bacteria-medaka-model, no-reads,
-                            empty-ubam, basecaller_5.2]
+                            empty-ubam, bad-bakta-param, fungi-isolates,
+                            sourmash-exclude, basecaller_5.2, pointfinder-arg, fungal-amr, isolates=false]
               TAG: [large_ram]
             - MATRIX_NAME: [reference-based, check-model, sample-sheet]
               TAG: [""]
@@ -29,43 +31,43 @@ docker-run:
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
                   --fastq test_data/fastq --threads 3 --chunk_size 100000"
-              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports"
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports,download_bakta_db"
         - if: $MATRIX_NAME == "de-novo-bam"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
                   --bam test_data/bam --threads 4 --chunk_size 100000 --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v3.5.2"
-              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports"
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports,download_bakta_db"
         - if: $MATRIX_NAME == "de-novo-ubam"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
                   --bam test_data/ubam/barcode01_4k_lt15Q_1k.bam --threads 4 --chunk_size 100000 --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_sup@v4.2.0"
-              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports"
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports,download_bakta_db"
         - if: $MATRIX_NAME == "de-novo-advanced_options"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
                   --fastq test_data/fastq --threads 3 --chunk_size 100000 --flye_opts '--genome-size 25k'"
-              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports"
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports,download_bakta_db"
         - if: $MATRIX_NAME == "reference-based"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 16GB \
               --fastq test_data/fastq --reference_based_assembly --reference test_data/ref/reference.subseq.fa.gz --threads 4 --chunk_size 100000"
-              NF_IGNORE_PROCESSES: "deNovo,assemblyStats,runProkka,makePerSampleReports"
+              NF_IGNORE_PROCESSES: "deNovo,assemblyStats,runBakta,download_bakta_db,makePerSampleReports,runDnaapler"
         - if: $MATRIX_NAME == "check-model"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 16GB \
               --fastq test_data/fastq --reference_based_assembly --reference test_data/ref/reference.subseq.fa.gz --threads 4 --chunk_size 100000"
-              NF_IGNORE_PROCESSES: "deNovo,assemblyStats,runProkka,makePerSampleReports"
+              NF_IGNORE_PROCESSES: "deNovo,assemblyStats,runBakta,download_bakta_db,makePerSampleReports,runDnaapler"
         - if: $MATRIX_NAME == "amr"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
-                  --fastq s3://ont-exd-int-s3-euwst1-epi2me-labs/wf-bacterial-genomes/test_data/isolates_fastq --sample_sheet test_data/isolates_sample_sheet.csv --threads 3 --chunk_size 100000 --isolates --client_fields test_data/client_fields.json --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v3.5.2"
-              NF_IGNORE_PROCESSES: "runProkka,medakaVariant,medakaVariantHdf,makePerSampleReports"
+                  --fastq s3://ont-exd-int-s3-euwst1-epi2me-labs/wf-bacterial-genomes/test_data/isolates_fastq --sample_sheet test_data/isolates_sample_sheet.csv --threads 3 --chunk_size 100000 --isolates --client_fields test_data/client_fields.json --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v3.5.2 --run_bakta=false --run_plasmid_id=false"
+              NF_IGNORE_PROCESSES: "runBakta,download_bakta_db,medakaVariant,medakaVariantHdf,makePerSampleReports,runMobSuite"
         - if: $MATRIX_NAME == "sample-sheet"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 16GB \
               --fastq test_data/fastq --reference_based_assembly --reference test_data/ref/reference.subseq.fa.gz --threads 4 --chunk_size 100000 \
                   --sample_sheet test_data/sample_sheet.csv"
-              NF_IGNORE_PROCESSES: "deNovo,assemblyStats,runProkka,makePerSampleReports"
+              NF_IGNORE_PROCESSES: "deNovo,assemblyStats,runBakta,download_bakta_db,makePerSampleReports,runDnaapler"
         - if: $MATRIX_NAME == "barcode04"
           # isolates barcode04 only has 4 reads and flye will fail due to low coverage
           variables:
@@ -73,47 +75,69 @@ docker-run:
               --fastq s3://ont-exd-int-s3-euwst1-epi2me-labs/wf-bacterial-genomes/test_data/isolates_fastq/barcode04 \
                   --threads 3 --chunk_size 100000 --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v3.5.2"
               NF_IGNORE_PROCESSES: "alignReads,readStats,coverStats,splitRegions,\
-                  medakaConsensus,medakaNetwork,medakaVariant,medakaVariantHdf,makeReport,runProkka,makePerSampleReports"
+                  medakaConsensus,medakaNetwork,medakaVariant,medakaVariantHdf,makeReport,runBakta,download_bakta_db,makePerSampleReports,runDnaapler,runMobSuite"
         - if: $MATRIX_NAME == "mixed-species"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
-              --fastq s3://ont-exd-int-s3-euwst1-epi2me-labs/wf-bacterial-genomes/test_data/isolates_fastq --sample_sheet test_data/isolates_mixed_sample_sheet.csv --threads 3 --chunk_size 100000 --isolates --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v3.5.2"
-              NF_IGNORE_PROCESSES: "runProkka,medakaVariant,medakaVariantHdf"
+              --fastq s3://ont-exd-int-s3-euwst1-epi2me-labs/wf-bacterial-genomes/test_data/isolates_fastq --sample_sheet test_data/isolates_mixed_sample_sheet.csv --threads 3 --chunk_size 100000 --isolates --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v3.5.2 --run_bakta=false"
+              NF_IGNORE_PROCESSES: "runBakta,download_bakta_db,medakaVariant,medakaVariantHdf"
         # serotyping
         - if: $MATRIX_NAME == "reference-iso"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 16GB \
               --fastq s3://ont-exd-int-s3-euwst1-epi2me-labs/wf-bacterial-genomes/wf-bacterial-genomes-demo/isolates_fastq/barcode02 --reference_based_assembly --reference test_data/ref/salmonella_reference.fa.gz --threads 4 --chunk_size 100000 --isolates --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v3.5.2"
-              NF_IGNORE_PROCESSES: "deNovo,runProkka"
+              NF_IGNORE_PROCESSES: "deNovo,runBakta,download_bakta_db,runDnaapler"
         - if: $MATRIX_NAME == "bacteria-medaka-model"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
               --bam test_data/bam --threads 4 --chunk_size 100000 --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v4.2.0"
-              NF_IGNORE_PROCESSES: "runProkka,makePerSampleReports"
+              NF_IGNORE_PROCESSES: "runBakta,download_bakta_db,makePerSampleReports"
         - if: $MATRIX_NAME == "no-reads"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
               --fastq test_data/no_data --sample_sheet test_data/sample_sheet_no_data.csv"
               NF_IGNORE_PROCESSES: "alignReads,readStats,coverStats,splitRegions,\
-                  medakaConsensus,medakaNetwork,medakaVariant,medakaVariantHdf,makeReport,runProkka,makePerSampleReports"
+                  medakaConsensus,medakaNetwork,medakaVariant,medakaVariantHdf,makeReport,runBakta,download_bakta_db,makePerSampleReports,runDnaapler,runMobSuite"
         - if: $MATRIX_NAME == "empty-ubam"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
               --bam test_data/no_data_ubam/empty.bam"
               NF_IGNORE_PROCESSES: "alignReads,readStats,coverStats,splitRegions,\
-                  medakaConsensus,medakaNetwork,medakaVariant,medakaVariantHdf,runProkka,makePerSampleReports,
-                  collect_results,createRunModel,deNovo"
+                  medakaConsensus,medakaNetwork,medakaVariant,medakaVariantHdf,runBakta,download_bakta_db,makePerSampleReports,\
+                  collect_results,createRunModel,deNovo,runDnaapler,runMobSuite"
+        - if: $MATRIX_NAME == "bad-bakta-param"
+          variables:
+              NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
+              --fastq test_data/fastq --threads 4 --bakta_opts '--db /bad/path/to/db'"
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports,download_bakta_db"
+        - if: $MATRIX_NAME == "fungi-isolates"
+          variables:
+              NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
+              --fastq test_data/fungi/barcode09.fastq --threads 4 --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v4.3.0 --isolates --max_coverage_plots 2"
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,download_bakta_db"
+        - if: $MATRIX_NAME == "sourmash-exclude"
+          variables:
+              NF_BEFORE_SCRIPT: "mkdir -p ${CI_PROJECT_NAME}/data/ && echo 'GCF_000307025.1' >> ${CI_PROJECT_NAME}/data/sourmash_db_exclude_list.txt && echo 'GCF_012345678.9' >> ${CI_PROJECT_NAME}/data/sourmash_db_exclude_list.txt"
+              NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
+              --fastq test_data/fastq --threads 4 --isolates --sourmash_db_exclude_list '${CI_PROJECT_NAME}/data/sourmash_db_exclude_list.txt'"
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,download_bakta_db"
         - if: $MATRIX_NAME == "basecaller_5.2"
           variables:
               NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
               --fastq test_data/fastq/barcode01/ --threads 4 --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_sup@v5.2.0"
-              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports"
-              
-# reminder: update AUX_IMAGE_TAG if the aux container package versions are changed
-release-prokka:
-    extends: .aux-container
-    variables:
-        AUX_IMAGE_NAME: "prokka"
-        AUX_IMAGE_ENVFILE: "environment_prokka.yaml"
-        AUX_IMAGE_TAG: "1.14.5"
-
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports,download_bakta_db"
+        - if: $MATRIX_NAME == "pointfinder-arg"
+          variables:
+              NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
+              --fastq test_data/fastq/barcode01/ --threads 4 --isolates --pointfinder_ignore_indels true --pointfinder_ignore_stop_codons true "
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,download_bakta_db"
+        - if: $MATRIX_NAME == "fungal-amr"
+          variables:
+              NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
+              --fastq test_data/fungi/barcode111.fastq.gz --threads 4 --override_basecaller_cfg dna_r10.4.1_e8.2_400bps_hac@v4.3.0 "
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,download_bakta_db"
+        - if: $MATRIX_NAME == "isolates=false"
+          variables:
+              NF_WORKFLOW_OPTS: "-executor.\\$$local.memory 32GB \
+                  --fastq test_data/fastq --threads 3 --isolates false"
+              NF_IGNORE_PROCESSES: "medakaVariant,medakaVariantHdf,makePerSampleReports,download_bakta_db"
