@@ -1,4 +1,4 @@
-<!---Frequently asked questions, pose any known limitations as FAQ's.--->
+<!---Frequently asked questions, pose any known limitations as FAQs.--->
 
 ### No results for multi-locus sequence typing?
 This usually occurs if the assembly is incomplete and does not have sufficient coverage to identify the house keeping genes of the typing scheme. Another, rarer scenario is if the assembly is from an organism with no typing scheme. A list of the available typing schemes can be found [here](https://github.com/tseemann/mlst/tree/master/db/pubmlst). In both scenarios, AMR calling will still be performed but only for acquired resistance genes.

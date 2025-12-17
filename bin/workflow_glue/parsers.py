@@ -1,4 +1,4 @@
-"""Parsers for output of `bcftools stats` and `prokka`."""
+"""Parsers for output of `bcftools stats` and `Bakta`."""
 
 from collections import defaultdict
 import os
@@ -7,24 +7,45 @@ import re
 import pandas as pd
 
 
-def parse_prokka_gff(filename):
-    """Process a Prokka `.gff` output file."""
+def format_gff3_string(text):
+    """Decode URL-encoded characters for display."""
+    text = text.replace("%2C", ",")
+    text = text.replace("%3B", ";")
+    text = text.replace("%3D", "=")
+    text = text.replace("%26", "&")
+    text = text.replace("%25", "%")
+    text = text.replace("%09", " ")  # tab → space
+    text = text.replace("%0A", " ")  # new line → space
+    text = text.replace("%0D", " ")  # carriage return → space
+    return text
+
+
+def parse_bakta_gff3(filename):
+    """Process a Bakta `.gff3` output file."""
     data = []
     with open(filename, "r") as f:
         for line in f:
+            line = line.strip()
+            if not line:
+                # skip empty lines
+                continue
             if line.startswith("##"):
-                if line.strip() == "##FASTA":
+                if line == "##FASTA":
                     # only FASTA seqs from now on --> stop processing the file
                     break
                 continue
-            contig, _, _, start, end, _, strand, _, attrs = line.strip().split("\t")
+            if line.startswith("#"):
+                # skip comment lines in the file header
+                continue
+
+            contig, _, _, start, end, _, strand, _, attrs = line.split("\t")
             name, prod, ec_number, gene = "-", "-", "-", "-"
             for attr in attrs.split(";"):
                 if attr.startswith("ID"):
                     name = attr.split("=")[1]
                 elif attr.startswith("product"):
-                    prod = attr.split("=")[1]
-                elif attr.startswith("eC_number"):
+                    prod = format_gff3_string(attr.split("=")[1])
+                elif attr.startswith("ec_number"):
                     ec_number = attr.split("=")[1]
                 elif attr.startswith("gene"):
                     gene = attr.split("=")[1]

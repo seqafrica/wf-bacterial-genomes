@@ -33,10 +33,8 @@ process medakaInference {
             model_to_use = "${basecall_model}:${type}"
         }
     """
-    medaka --version
-    echo ${basecall_model}
     medaka inference align.bam "${meta.alias}.consensus_probs.hdf" \
-        --threads 2 --regions "${region}" --model ${model_to_use}
+        --threads $task.cpus --regions "${region}" --model ${model_to_use}
     """
 }
 

@@ -2,8 +2,8 @@
     "$schema": "http://json-schema.org/draft-07/schema",
     "$id": "https://raw.githubusercontent.com/./master/nextflow_schema.json",
     "title": "epi2me-labs/wf-bacterial-genomes",
-    "workflow_title" : "Bacterial Genomes",
-    "description": "Assembly, variant calling, and annotation of bacterial genomes.",
+    "workflow_title" : "Bacterial & Fungal Genomes",
+    "description": "Assembly, variant calling, and annotation of microbial genomes.",
     "demo_url": "https://ont-exd-int-s3-euwst1-epi2me-labs.s3.amazonaws.com/wf-bacterial-genomes/wf-bacterial-genomes-demo.tar.gz",
     "aws_demo_url": "https://ont-exd-int-s3-euwst1-epi2me-labs.s3.amazonaws.com/wf-bacterial-genomes/wf-bacterial-genomes-demo/aws.nextflow.config",
     "url": "https://github.com/epi2me-labs/wf-bacterial-genomes",
@@ -108,16 +108,23 @@
                 "isolates": {
                     "type": "boolean",
                     "title": "Isolates mode",
-                    "default": false,
+                    "default": true,
                     "description": "Run the Isolates pipeline on the assembly results if set to True.",
                     "help_text": "Isolates mode adds further analysis options to the workflow such as multi-locus sequence typing and antimicrobial resistance calling, as well as producing single reports for each sample in the run."
+                },
+                "sourmash_db_exclude_list": {
+                    "type": "string",
+                    "title": "Assemblies to exclude from Sourmash database",
+                    "format": "file-path",
+                    "description": "Path to file containing assembly IDs (GCA_/GCF_) to exclude from Sourmash species identification, one per line.",
+                    "help_text": "A text file containing assembly identifiers (starting with GCA_ or GCF_) that should be excluded from the sourmash database during species identification. Each line should contain one assembly ID. Invalid entries will be skipped."
                 },
                 "resfinder_threshold": {
                     "type": "string",
                     "title": "Resfinder gene identity threshold",
                     "default": "0.8",
                     "description": "Threshold of required identity to report a match between a gene in the ResFinder database and the assembly. Valid interval: 0.00-1.00",
-                    "help_text": "Identity refers to the ratio of base pairs that match between the sequence in your assembly and that of the sequence in the ResFinder database. Increasing the threshold will results in fewer, but more accurate hits against the database."
+                    "help_text": "Identity refers to the ratio of base pairs that match between the sequence in your assembly and that of the sequence in the ResFinder database. Increasing the threshold will result in fewer, but more accurate hits against the database."
                 },
                 "resfinder_coverage": {
                     "type": "string",
@@ -125,6 +132,39 @@
                     "default": "0.6",
                     "description": "Minimum coverage (breadth-of) threshold required to report a match between a gene in the ResFinder database and the assembly. Valid interval: 0.00-1.00",
                     "help_text": "The amount of an AMR gene that has to be present within the assembly as compared to the reference in the ResFinder database."
+                },
+                "pointfinder_ignore_indels": {
+                    "type": "boolean",
+                    "title": "Ignore indels in PointFinder analysis",
+                    "default": false,
+                    "description": "Ignore indels when calling point mutations in PointFinder analysis.",
+                    "help_text": "When enabled, PointFinder will skip detection of insertion and deletion mutations that may confer antimicrobial resistance. This is useful when sequencing errors or assembly artifacts might cause false positive indel calls, but may miss genuine resistance-conferring indels."
+                },
+                "pointfinder_ignore_stop_codons": {
+                    "type": "boolean", 
+                    "title": "Ignore stop codons in PointFinder analysis",
+                    "default": false,
+                    "description": "Ignore stop codons when calling point mutations in PointFinder analysis.",
+                    "help_text": "When enabled, PointFinder will not report premature stop codons as resistance mutations. This can be useful to reduce noise from sequencing errors that introduce false stop codons, but may miss genuine resistance mutations that create truncated proteins."
+                },
+                "resfinder_db": {
+                    "type": "string",
+                    "title": "Path to custom ResFinder database",
+                    "description": "Path to custom ResFinder database directory.",
+                    "help_text": "Override the default ResFinder database with a custom one. This should point to a directory containing the ResFinder database files. If not specified, ResFinder will use its bundled ResFinder database."
+                },
+                "pointfinder_db": {
+                    "type": "string",
+                    "title": "Path to custom PointFinder database",
+                    "description": "Path to custom PointFinder database directory.",
+                    "help_text": "Override the default PointFinder database with a custom one. This should point to a directory containing the PointFinder database files. If not specified, ResFinder will use its bundled PointFinder database."
+                },
+                "sourmash_pointfinder_mapping": {
+                    "type": "string",
+                    "title": "Mapping species names for custom Pointfinder database entries",
+                    "format": "file-path",
+                    "description": "CSV file mapping Sourmash species names to PointFinder species names. Must contain 'Sourmash species' and 'PointFinder species' columns.",
+                    "help_text": "Optional CSV file to customize the mapping between Sourmash taxonomic classifications and PointFinder species for antimicrobial resistance analysis. If not provided, default mappings will be used. The CSV should have two columns: 'Sourmash species' and 'PointFinder species'."
                 }
             }
         },
@@ -177,22 +217,37 @@
                 "chunk_size": {
                     "type": "integer",
                     "title": "Chunk size",
-                    "default": 100000,
+                    "default": 1000000,
                     "description": "Splits the reference sequences (or Flye assembly) into overlapping sub-regions of this size when processing with Medaka.",
                     "hidden": true
                 },
-                "run_prokka": {
+                "run_bakta": {
                     "type": "boolean",
-                    "title": "Annotate genome with Prokka",
-                    "description": "Run prokka on consensus sequence",
+                    "title": "Annotate genome with Bakta",
+                    "description": "Run Bakta on consensus sequence",
                     "default": true,
                     "help_text": "Will provide an output file with a list of annotations for your sequence. Optional because it can take some time."
                 },
-                "prokka_opts": {
+                "bakta_opts": {
                     "type": "string",
-                    "Title": "Additional Prokka options",
-                    "description": "Command-line arguments for prokka",
-                    "help_text": "[Command line arguments](https://github.com/tseemann/prokka#command-line-options) which can be used to alter prokka output annotation files."
+                    "Title": "Additional Bakta options",
+                    "description": "Command-line arguments for Bakta",
+                    "help_text": "[Command line arguments](https://github.com/oschwengers/bakta#usage) which can be used to alter Bakta output annotation files."
+                },
+                "bakta_db": {
+                    "type": "string",
+                    "format": "path",
+                    "title": "Bakta database path",
+                    "description": "Path to existing Bakta database directory. If not provided, the workflow will download the database.",
+                    "help_text": "Provide the path to a Bakta database directory containing both Bakta and AMRFinderPlus databases. If not specified, the workflow will automatically download the database type specified by bakta_db_type."
+                },
+                "bakta_db_type": {
+                    "type": "string",
+                    "title": "Bakta database type",
+                    "default": "light",
+                    "description": "Type of Bakta database to download if bakta_db is not provided.",
+                    "help_text": "Choose 'light' for the standard database (~1.3 GB) or 'full' for the complete database (~30 GB). Only used when bakta_db is not specified.",
+                    "enum": ["light", "full"]
                 },
                 "flye_genome_size": {
                     "type": "integer",
@@ -217,6 +272,26 @@
                     "default": 1000,
                     "Title": "Minimum read length",
                     "description": "Reads below this threshold will be removed from analysis."
+                },
+                "max_coverage_plots": {
+                    "type": "integer",
+                    "default": 20,
+                    "title": "Maximum contigs for depth plots",
+                    "description": "Maximum number of largest contigs for which depth coverage plots will be displayed in the summary report.",
+                    "help_text": "When specified, only the N largest contigs (by total length) will be shown in the genome coverage depth plots. Set to 'null' to display all contigs."
+                },
+                "run_plasmid_id": {
+                    "type": "boolean",
+                    "default": true,
+                    "title": "Run plasmid identification",
+                    "description": "Enable plasmid identification and characterization using MOB-suite.",
+                    "help_text": "MOB-suite will identify plasmid sequences in the assembled genomes, reconstruct plasmids, and predict plasmid mobility based on the presence of mobilization and replication genes. Results include plasmid sequences, mobility predictions, and incompatibility group typing."
+                },
+                "plasmid_id_opts": {
+                    "type": "string",
+                    "title": "Additional MOB-suite options",
+                    "description": "Command-line arguments for mob_recon",
+                    "help_text": "Additional command-line arguments that can be passed to mob_recon. For example, `--filter_db` to specify custom databases. See [MOB-suite](https://github.com/phac-nml/mob-suite) documentation for available options."
                 }
             },
             "dependencies": {
@@ -254,7 +329,7 @@
                     "title": "Threads",
                     "default": 3,
                     "description": "Number of CPU threads.",
-                    "help_text": "Provided to alignment, flye assembly and prokka steps to improve performance."
+                    "help_text": "Provided to alignment, Flye assembly, Dnaapler, aligment, Bakta, and MOB-suite workflow steps to improve performance."
                 },
                 "disable_ping": {
                     "type": "boolean",
@@ -283,7 +358,8 @@
                 },
                 "store_dir" : {
                     "type": "string",
-                    "description": "Unused",
+                    "description": "Cache directory for workflow databases (leave unset for cloud execution)",
+                    "help_text": "When set, databases are cached in this directory to avoid re-downloading.",
                     "format": "directory-path",
                     "hidden": true
                 }
@@ -311,6 +387,14 @@
         }
     ],
     "properties": {
+        "_sourmash_db_exclude_list": {
+            "type": "string",
+            "hidden": true
+        },
+        "_sourmash_pointfinder_mapping": {
+            "type": "string",
+            "hidden": true
+        },
         "aws_image_prefix": {
             "type": "string",
             "hidden": true

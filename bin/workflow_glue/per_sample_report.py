@@ -1,31 +1,19 @@
 """Create a report for each sample."""
+from enum import Enum
 import json
 import os
 
+import dacite
 from dominate import tags as html_tags
 from ezcharts.components.reports import labs
 import pandas as pd
+from workflow_glue.models.custom import Sample
+from workflow_glue.report_utils import convert_bp, fill_none
 
-from .collect_results import gather_sample_files  # noqa: ABS101
-from .parsers import parse_mlst  # noqa: ABS101
-from .process_resfinder_iso import (  # noqa: ABS101
-    get_acquired_data,
-    get_point_data
+from .collect_results import (  # noqa: ABS101
+    gather_sample_files
 )
 from .util import get_named_logger, wf_parser  # noqa: ABS101
-
-
-def convert_bp(size):
-    """Convert bp values to appropriate metric prefix."""
-    size = float(str(size).replace(",", ""))
-    for x in ["bp", "Kb", "Mb", "Gb", "Tb"]:
-        if size < 1000.0:
-            if x == "bp":
-                return "{:.0f} {}".format(size, x)
-            else:
-                return "{:.2f} {}".format(size, x)
-        size /= 1000.0
-    return size
 
 
 def lead_section(text):
@@ -42,40 +30,9 @@ def lead_section(text):
     return _div
 
 
-def get_run_summary(files, reference=None):
-    """Get run summary statistics."""
-    run_dict = {}
-    total_yield = 0
-    median_read_length = 0
-    median_read_length = 0
-    if files["fastcat"]:
-        read_df = pd.read_csv(files["fastcat"], sep="\t")
-        total_yield = read_df["read_length"].sum()
-        median_read_length = read_df["read_length"].median()
-        median_read_quality = read_df["mean_quality"].median()
-
-    taxon = "Unknown"
-    if files["mlst"]:
-        mlst_df = parse_mlst(files["mlst"])
-        if mlst_df is not None:
-            taxon = mlst_df.loc[0, "scheme"]
-
-    if reference is None:
-        run_dict["taxon"] = taxon.capitalize()
-    else:
-        run_dict["reference"] = os.path.basename(reference)
-    run_dict["total_yield"] = convert_bp(total_yield),
-    run_dict["median_read_length"] = convert_bp(median_read_length),
-    run_dict["median_read_quality"] = median_read_quality
-    return run_dict
-
-
-def flye_section(flye_file):
+def flye_section(assembly):
     """Extract information on denovo assembly."""
-    df = pd.read_csv(flye_file, sep="\t")
-    contig_num = df.shape[0]
-    total_yield = convert_bp(df["length"].sum())
-    circular_num = len(df[df["circ."] == "Y"])
+    summary = assembly.get_flye_summary()
 
     _div = html_tags.div()
     _table = html_tags.table(cls="table table-striped")
@@ -89,9 +46,9 @@ def flye_section(flye_file):
     )
     _table.add(_thead)
     _tr = html_tags.tr()
-    _tr.add(html_tags.td(contig_num))
-    _tr.add(html_tags.td(total_yield))
-    _tr.add(html_tags.td(circular_num))
+    _tr.add(html_tags.td(summary['contig_num']))
+    _tr.add(html_tags.td(summary['total_yield']))
+    _tr.add(html_tags.td(summary['circular_num']))
     _table.add(_tr)
     _div.add(_table)
     return _div
@@ -139,26 +96,49 @@ def ref_section(total):
     return _div
 
 
-def amr_section(resfinder_json, html_id):
+def amr_section(acquired_data, point_data, html_id):
     """Parse resfinder JSON for accordion style table."""
-    with open(resfinder_json) as fh:
-        resfinder_data_raw = json.load(fh)
-    acquired_data = get_acquired_data(resfinder_data_raw)
-    point_data = get_point_data(resfinder_data_raw)
     if (not acquired_data and not point_data):
-        return html_tags.p("No AMR genes detected in sample.")
+        return html_tags.b("No AMR genes detected in sample.")
+    # Check if any point mutations have FungAMR entries and add note
+    has_fungamr = False
+    if point_data:
+        for gene, evidence in point_data.items():
+            if (
+                evidence and
+                any(mutation.get("has_fungamr_notes", False) for mutation in evidence)
+            ):
+                has_fungamr = True
+                break
+    _container = html_tags.div()
+    if has_fungamr:
+        _note = html_tags.p(
+            html_tags.a(
+                "FungAMR",
+                href="https://doi.org/10.1038/s41564-025-02084-7"),
+            " database entries may indicate antimicrobial resistance or "
+            "increased susceptibility. Prediction confidence scores shown"
+            " in notes: positive scores (1-8) indicate resistance (1="
+            "strongest evidence), negative scores (-1 to -8) indicate "
+            "increased susceptibility (-1=strongest evidence).",
+            cls="small"
+        )
+        _container.add(_note)
+
     _div = html_tags.div(cls="accordion-item")
     # Point mutations
-    row = 0   # Fault if gene name contains "'" (e.g aac(2')-Ic
+    row = 0
     for gene, evidence in point_data.items():
         if not evidence:
             continue
         row += 1
+        show_notes_column = any(
+            mutation.get("has_fungamr_notes", False) for mutation in evidence)
         drugs = {drug.capitalize() for mut in evidence for drug in mut["drugs"]}
         _head = html_tags.h2(id=f"{row}", style="border: 1px solid rgba(0,0,0,.125);\
                             border-collapse: collapse;\
-                             padding:0;\
-                             margin-bottom:0")
+                            padding:0;\
+                            margin-bottom:0")
         _button = html_tags.button(
             html_tags.span(html_tags.b(gene)),
             html_tags.span(
@@ -194,21 +174,27 @@ def amr_section(resfinder_json, html_id):
         _div2 = html_tags.div(cls="accordion body")
         _table = html_tags.table(cls="table table-striped")
         _thead = html_tags.thead()
-        _thead.add(
-            html_tags.tr(
-                html_tags.th("Antimicrobial resistance"),
-                html_tags.th("Amino Acid"),
-                html_tags.th("Nucleotide"),
-            )
-        )
+        header_cells = [
+            html_tags.th("Antimicrobial resistance"),
+            html_tags.th("Amino Acid"),
+            html_tags.th("Nucleotide"),
+            html_tags.th("PMID/ Database")
+        ]
+        if show_notes_column:
+            header_cells.append(html_tags.th("Notes"))
+        _thead.add(html_tags.tr(header_cells))
         _table.add(_thead)
         for mutation in evidence:
             _tr = html_tags.tr()
-            _tr.add(
+            row_cells = [
                 html_tags.td("; ".join(d.capitalize() for d in mutation["drugs"])),
                 html_tags.td(mutation["aa"]),
-                html_tags.td(mutation["nuc"].upper())
-            )
+                html_tags.td(mutation["nuc"].upper()),
+                html_tags.td(mutation["pmids"])
+            ]
+            if show_notes_column:
+                row_cells.append(html_tags.td(mutation.get("notes", "-")))
+            _tr.add(row_cells)
             _table.add(_tr)
         _div2.add(_table)
         _div1.add(_div2)
@@ -232,7 +218,7 @@ def amr_section(resfinder_json, html_id):
             html_tags.span(
                 "ResFinder",
                 html_tags.span(
-                    1,  # TODO add evidence as list for multiple shits of gene
+                    1,  # TODO add evidence as list for multiple hits of gene
                     cls="position-absolute badge rounded-pill bg-danger",
                     style="top:8px"
                     ),
@@ -280,18 +266,15 @@ def amr_section(resfinder_json, html_id):
     return _div
 
 
-def mlst_section(mlst_file):
+def mlst_section(mlst_data):
     """Extract mlst results."""
-    mlst_df = parse_mlst(mlst_file)
-    if mlst_df is None:
-        return html_tags.div(html_tags.p(
-            "MLST was unable to identify a typing scheme for this sample. "
-            "Please check coverage of sample."
-            ))
-    col_names = mlst_df.columns
-    row_data = mlst_df.iloc[0].values
-    # C apitalise all non-gene columns
-    col_names = [x.capitalize() if i < 3 else x for i, x in enumerate(col_names)]
+    # Build column names and row data
+    col_names = ["Id", "Scheme", "Sequence type"]
+    row_data = ["-", mlst_data.detected_species, mlst_data.sequence_type]
+    # Add allele columns
+    for schema in mlst_data.typing_schema:
+        col_names.append(schema.schema_identifier)
+        row_data.append(schema.allele_variant)
     # HTML section
     _div = html_tags.div()
     _table = html_tags.table(cls="table table-striped")
@@ -300,13 +283,85 @@ def mlst_section(mlst_file):
     _table.add(_thead)
     _tr = html_tags.tr()
     for cell in row_data:
-        _tr.add(html_tags.td(cell))
+        _tr.add(html_tags.td(fill_none(cell, fill_na='-')))
     _table.add(_tr)
     _div.add(_table)
     return _div
 
 
-def serotype_section(serotype_file):
+def species_id_section(
+        species_identification, sourmash_excluded, fill_na="-"
+):
+    """Extract species identification from Sourmash results."""
+    if not species_identification.detected_matches:
+        return html_tags.div(html_tags.p(
+            "Species identification was unable to identify the sample. "
+            "Please check coverage of sample."
+        ))
+    _div = html_tags.div()
+    _table = html_tags.table(cls="table table-striped")
+    _thead = html_tags.thead()
+    _thead.add(html_tags.tr([
+        html_tags.th("Match rank"),
+        html_tags.th("Species call"),
+        html_tags.th("Query containment ANI"),
+        html_tags.th("Intersect (bp)"),
+        html_tags.th("Remaining (bp)"),
+        html_tags.th("Fraction original query"),
+        html_tags.th("Fraction unique"),
+        html_tags.th("Reference Genome"),
+    ]))
+    _table.add(_thead)
+    for match in species_identification.detected_matches:
+        _tr = html_tags.tr()
+        _tr.add(html_tags.td(match.rank))
+        _tr.add(html_tags.td(fill_none(match.species_call, fill_na)))
+        ani_value = (
+            f"{match.query_containment_ani: .3f}"
+            if match.query_containment_ani is not None else fill_na
+        )
+        _tr.add(html_tags.td(ani_value))
+        intersect_value = (
+            f"{match.intersect_bp}"
+            if match.intersect_bp is not None else fill_na
+        )
+        _tr.add(html_tags.td(intersect_value))
+        remaining_value = (
+            f"{match.remaining_bp}"
+            if match.remaining_bp is not None else fill_na
+        )
+        _tr.add(html_tags.td(remaining_value))
+        f_orig_value = (
+            f"{match.f_orig_query: .3f}"
+            if match.f_orig_query is not None else fill_na
+        )
+        _tr.add(html_tags.td(f_orig_value))
+        f_unique_value = (
+            f"{match.f_unique_to_query: .3f}"
+            if match.f_unique_to_query is not None else fill_na
+        )
+        _tr.add(html_tags.td(f_unique_value))
+        _tr.add(html_tags.td(match.reference_name or fill_na))
+        _table.add(_tr)
+    _div.add(_table)
+
+    if sourmash_excluded and sourmash_excluded.excluded_assemblies:
+        _div.add(html_tags.small(
+            html_tags.strong(
+                f"Assemblies excluded from default Sourmash database "
+                f"({sourmash_excluded.total_excluded}): "
+            ),
+            ", ".join(sourmash_excluded.excluded_assemblies),
+        ))
+    else:
+        _div.add(html_tags.small(
+            "No assemblies were excluded from the Sourmash database.",
+        ))
+
+    return _div
+
+
+def serotype_section(serotype_data):
     """Extract serotyping results."""
     columns = [
         "Predicted serotype",
@@ -317,13 +372,15 @@ def serotype_section(serotype_file):
         "H2 antigen prediction(fljB)",
         "Note"
     ]
-    # Check for file is made before section created in main()
-    sero_df = pd.read_csv(
-        serotype_file, sep="\t",
-        usecols=columns
-    )[columns]
-    # Done manually to allow non-scrollable table for PDF output
-    row_data = sero_df.iloc[0].values
+    row_data = [
+        serotype_data.predicted_serotype,
+        serotype_data.predicted_antigenic_profile,
+        serotype_data.predicted_identification,
+        serotype_data.o_antigen_prediction,
+        serotype_data.h1_antigen_prediction,
+        serotype_data.h2_antigen_prediction,
+        serotype_data.note
+    ]
     _div = html_tags.div()
     _table = html_tags.table(cls="table table-striped")
     _thead = html_tags.thead()
@@ -331,7 +388,7 @@ def serotype_section(serotype_file):
     _table.add(_thead)
     _tr = html_tags.tr()
     for cell in row_data:
-        _tr.add(html_tags.td(cell))
+        _tr.add(html_tags.td(fill_none(cell, fill_na='-')))
     _table.add(_tr)
     _div.add(_table)
     return _div
@@ -340,6 +397,16 @@ def serotype_section(serotype_file):
 def main(args):
     """Run the entry point."""
     logger = get_named_logger("Report")
+
+    sample_json = os.path.join(args.data_dir, f"{args.sample_alias}.json")
+    with open(sample_json) as f:
+        sample_dict = json.load(f)
+        sample = dacite.from_dict(
+            data_class=Sample,
+            data=sample_dict,
+            config=dacite.Config(cast=[Enum])
+        )
+
     report = labs.LabsReport(
         f"{args.sample_alias} | Isolate Sequencing Report",
         "wf-bacterial-genomes",
@@ -359,10 +426,9 @@ def main(args):
     with open(args.params) as fh:
         params_data = json.load(fh)
 
-    run_summary_dict = get_run_summary(
-        files,
-        params_data["reference"]
-        )
+    run_summary_dict = sample.get_run_summary(
+        reference=params_data.get("reference")
+    )
 
     run_summary = lead_section(run_summary_dict)
 
@@ -373,26 +439,62 @@ def main(args):
 
     with report.add_section("Multilocus sequencing typing (MLST)", "MLST"):
         with html_tags.div(cls="row"):
-            if files["mlst"]:
-                mlst_section(files["mlst"])
+            if sample.has_mlst():
+                mlst_section(sample.results.sequence_typing)
             else:
-                html_tags.p("MLST was unable to be perfomed.")
+                html_tags.b(
+                    "MLST was unable to identify scheme for "
+                    "this sample. Please check coverage of sample."
+                )
 
-    if files["serotype"]:
+    with report.add_section("Species identification", "SpeciesID"):
+        with html_tags.div(cls="row"):
+            if sample.has_species_identification():
+                species_data = sample.results.species_identification
+                excluded_data = sample.results.sourmash_excluded_genomes
+                html_tags.p(
+                    "Taxonomic identification was done using Sourmash."
+                )
+                species_id_section(species_data, excluded_data)
+            else:
+                html_tags.b(
+                    "Sourmash was unable to identify species for this sample."
+                )
+
+    if sample.has_serotype():
         with report.add_section("Salmonella serotyping", "Serotype"):
             with html_tags.div(cls="row"):
-                serotype_section(files["serotype"])
+                serotype_section(sample.results.serotyping)
 
     with report.add_section('Antimicrobial resistance prediction', 'AMR', True):
         with html_tags.div(cls="accordion", id="accordionTable"):
-            if files["amr"]:
+            if sample.has_amr():
                 html_tags.p(
                     "Analysis was performed using ResFinder. "
                     "Click on each gene for more information."
                 )
-                amr_section(files["amr"], "accordionTable")
+                acquired = (
+                    sample.results.antimicrobial_resistance
+                    .get_acquired_resistance_display()
+                )
+                mutations = (
+                    sample.results.antimicrobial_resistance
+                    .get_point_mutations_display()
+                )
+                amr_section(acquired, mutations, "accordionTable")
             else:
-                html_tags.p("No AMR genes detected for specific species.")
+                html_tags.b("No AMR genes detected for this sample.")
+            if params_data.get("pointfinder_ignore_indels", False):
+                html_tags.small(
+                    "PointFinder analysis was run with --ignore_indels "
+                    "flag enabled."
+                )
+                html_tags.br()
+            if params_data.get("pointfinder_ignore_stop_codons", False):
+                html_tags.small(
+                    "PointFinder analysis was run with --ignore_stop_codons "
+                    "flag enabled."
+                )
 
     with report.add_section("Assembly QC", "Assembly", True):
         with html_tags.div(cls="row"):
@@ -404,7 +506,7 @@ def main(args):
                 if files["depth"]:
                     ref_section(files["depth"])
                 else:
-                    html_tags.p(
+                    html_tags.b(
                         "No coverage information, please check input data quality."
                         )
             else:
@@ -412,13 +514,13 @@ def main(args):
                     "As no reference was provided the reads were assembled"
                     " and corrected using Flye and Medaka."
                 )
-                if files["flye_stats"]:
-                    flye_section(files["flye_stats"])
+                if sample.has_assembly():
+                    flye_section(sample.results.assembly)
                 else:
-                    html_tags.p(
-                        """No denovo assembly for sample.
-                         Please check input data quality."""
-                        )
+                    html_tags.b(
+                        "No denovo assembly was produced for this sample. "
+                        "Please check input data quality."
+                    )
 
     report.write(args.output)
     logger.info(f"Report written to {args.output}.")

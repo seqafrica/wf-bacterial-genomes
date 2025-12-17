@@ -1,1 +1,1 @@
-Assembly, variant calling, and annotation of bacterial genomes.
+Assembly, variant calling, and annotation of microbial genomes.

@@ -175,6 +175,33 @@ process amrCheckpoint {
 }
 
 
+process plasmidIdCheckpoint {
+  label "wf_common"
+  cpus 1
+  memory "1 GB"
+  input:
+    tuple val(meta), val(status)
+  output:
+    path "checkpoint_info.json", emit: checkpoint
+  script:
+    def files = status == 'complete' ? [ 
+      "mob-suite-results": "${meta.alias}_mob_results"
+    ] : [ ]
+
+    def checkpoint_data = [[
+            sample: "${meta.alias}",
+            checkpoint_name: "plasmid-identification",
+            status: "${status}",
+            files: files
+        ]]
+
+    checkJson = new JsonBuilder(checkpoint_data).toPrettyString()
+    """
+    echo '$checkJson' > checkpoint_info.json
+    """
+}
+
+
 process annotationCheckpoint {
   label "wf_common"
   cpus 1
@@ -184,7 +211,10 @@ process annotationCheckpoint {
   output:
     path "checkpoint_info.json", emit: checkpoint
   script:
-    def files = status == 'complete' ? [ "annotation": "${meta.alias}.prokka.gff" ] : [ ]
+    def files = status == 'complete' ? [ 
+      "annotation-gff3": "${meta.alias}.bakta.gff3",
+      "annotation-gbff": "${meta.alias}.bakta.gbff"
+    ] : [ ]
     // make our checkpoint data
     def checkpoint_data = [[        
             sample: "${meta.alias}",
