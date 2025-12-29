@@ -214,7 +214,7 @@ process amrfinder_hamronize {
 }
 
 process resfinder2 {
-    label "amr"
+    label "resfinder"
     cpus 2
     memory "2 GB"
     input:
