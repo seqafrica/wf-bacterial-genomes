@@ -864,7 +864,7 @@ workflow calling_pipeline {
             mlst = run_isolates.mlst
             taxonomy_results = run_isolates.taxonomy
             sourmash_exclude = run_isolates.sourmash_excluded_genomes
-            hamronize = run_isolates.hamronize
+            hamronize = run_isolates.hamronized
             amr = run_isolates.amr
             serotype = run_isolates.serotype
             amr_status = amr |
